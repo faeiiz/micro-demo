@@ -7,24 +7,24 @@ import (
 	"strings"
 )
 
-type Pokemon struct {
+type Character struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	Type string `json:"type"`
+	Power int   `json:"power"`
 }
 
-var pokemons = []Pokemon{
-	{ID: "1", Name: "Pikachu", Type: "Electric"},
-	{ID: "2", Name: "Charmander", Type: "Fire"},
-	{ID: "3", Name: "Bulbasaur", Type: "Grass"},
+var chars = []Character{
+	{ID: "1", Name: "Goku", Power: 9001},
+	{ID: "2", Name: "Vegeta", Power: 8500},
+	{ID: "3", Name: "Gohan", Power: 7000},
 }
 
 func main() {
-	http.HandleFunc("/pokemons", handleAll)
-	http.HandleFunc("/pokemons/", handleByID)
-	http.HandleFunc("/pokemons/search", handleSearch)
-	log.Println("pokemon running on :8082")
-	log.Fatal(http.ListenAndServe(":8082", nil))
+	http.HandleFunc("/chars", handleAll)
+	http.HandleFunc("/chars/", handleByID)
+	http.HandleFunc("/chars/search", handleSearch)
+	log.Println("dbz running on :8083")
+	log.Fatal(http.ListenAndServe(":8083", nil))
 }
 
 func handleAll(w http.ResponseWriter, r *http.Request) {
@@ -32,7 +32,7 @@ func handleAll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	json.NewEncoder(w).Encode(pokemons)
+	json.NewEncoder(w).Encode(chars)
 }
 
 func handleByID(w http.ResponseWriter, r *http.Request) {
@@ -46,9 +46,9 @@ func handleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[1]
-	for _, p := range pokemons {
-		if p.ID == id {
-			json.NewEncoder(w).Encode(p)
+	for _, c := range chars {
+		if c.ID == id {
+			json.NewEncoder(w).Encode(c)
 			return
 		}
 	}
@@ -61,10 +61,10 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.URL.Query().Get("name")
-	res := []Pokemon{}
-	for _, p := range pokemons {
-		if strings.Contains(strings.ToLower(p.Name), strings.ToLower(name)) {
-			res = append(res, p)
+	res := []Character{}
+	for _, c := range chars {
+		if strings.Contains(strings.ToLower(c.Name), strings.ToLower(name)) {
+			res = append(res, c)
 		}
 	}
 	json.NewEncoder(w).Encode(res)

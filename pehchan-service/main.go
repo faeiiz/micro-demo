@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -9,25 +10,63 @@ import (
 type User struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	Age  int    `json:"age"`
 }
 
-var users = map[string]User{
-	"1": {ID: "1", Name: "Admin User"},
-	"2": {ID: "2", Name: "Guest User"},
+var users = []User{
+	{ID: "1", Name: "Admin", Age: 30},
+	{ID: "2", Name: "Mimi", Age: 26},
+	{ID: "3", Name: "Alex", Age: 28},
 }
 
 func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		id := strings.TrimPrefix(r.URL.Path, "/")
-		if id == "" || id == "all" {
-			json.NewEncoder(w).Encode(users)
+	http.HandleFunc("/users", handleUsers)         // GET /users
+	http.HandleFunc("/users/", handleUserByID)     // GET /users/{id}
+	http.HandleFunc("/users/search", handleSearch) // GET /users/search?name=
+	log.Println("pehchan running on :8081")
+	log.Fatal(http.ListenAndServe(":8081", nil))
+}
+
+func handleUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	json.NewEncoder(w).Encode(users)
+}
+
+func handleUserByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// path: /users/{id}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 2 {
+		http.Error(w, "id missing", http.StatusBadRequest)
+		return
+	}
+	id := parts[1]
+	for _, u := range users {
+		if u.ID == id {
+			json.NewEncoder(w).Encode(u)
 			return
 		}
-		if user, ok := users[id]; ok {
-			json.NewEncoder(w).Encode(user)
-		} else {
-			http.Error(w, "User Not Found", 404)
+	}
+	http.NotFound(w, r)
+}
+
+func handleSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := r.URL.Query().Get("name")
+	res := []User{}
+	for _, u := range users {
+		if strings.Contains(strings.ToLower(u.Name), strings.ToLower(name)) {
+			res = append(res, u)
 		}
-	})
-	http.ListenAndServe(":8080", nil)
+	}
+	json.NewEncoder(w).Encode(res)
 }
