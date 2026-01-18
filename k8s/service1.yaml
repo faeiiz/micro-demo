@@ -15,7 +15,7 @@ spec:
       containers:
         - name: service1
           image: service1:local
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           env:
             - name: SERVICE2_URL
               value: "http://service2:8081/process"
