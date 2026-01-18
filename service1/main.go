@@ -1,77 +1,131 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
+	"os"
 	"strings"
+	"time"
 )
 
+type User struct {
+	ID    string
+	Name  string
+	Email string
+}
+
+// static token -> user mapping (replace with DB later)
+var tokens = map[string]User{
+	"token-admin-123": {ID: "1", Name: "Admin", Email: "admin@example.com"},
+	"token-mimi-456":  {ID: "2", Name: "Mimi", Email: "mimi@example.com"},
+}
+
 func main() {
-	// 1. Define the routing table (Internal K8s DNS names)
-	services := map[string]string{
-		"/pehchan": "http://pehchan-service:8080",
-		"/pokemon": "http://pokemon-service:8080",
-		"/dbz":     "http://dbz-service:8080",
+	// Backend service addresses (use k8s DNS or docker-compose names)
+	pehchanURL := envOr("PEHCHAN_URL", "http://pehchan:8081")
+	pokemonURL := envOr("POKEMON_URL", "http://pokemon:8082")
+	dbzURL := envOr("DBZ_URL", "http://dbz:8083")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/", authMiddleware(func(w http.ResponseWriter, r *http.Request, user User) {
+		// route based on prefix after /api/
+		path := strings.TrimPrefix(r.URL.Path, "/api/")
+		switch {
+		case strings.HasPrefix(path, "pehchan"):
+			proxyTo(w, r, pehchanURL, strings.TrimPrefix(path, "pehchan"))
+
+		case strings.HasPrefix(path, "pokemon"):
+			proxyTo(w, r, pokemonURL, strings.TrimPrefix(path, "pokemon"))
+
+		case strings.HasPrefix(path, "dbz"):
+			proxyTo(w, r, dbzURL, strings.TrimPrefix(path, "dbz"))
+
+		default:
+			http.Error(w, "unknown api route", http.StatusNotFound)
+		}
+	}))
+
+	addr := envOr("LISTEN_ADDR", ":8080")
+	log.Printf("service1 starting on %s\n", addr)
+	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
+	return fallback
+}
 
-	// 2. Define the main handler (The entry point)
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-
-		// --- STEP 1: AUTHENTICATION ---
-		token := r.Header.Get("X-Auth-Token") // Or "Authorization"
-		if token == "" {
-			fmt.Println("Auth failed: Missing token")
-			http.Error(w, "Missing Authentication Token", http.StatusUnauthorized)
+// authMiddleware enforces presence of Authorization header "Bearer <token>".
+// If token valid, calls the handler with the resolved user.
+func authMiddleware(next func(http.ResponseWriter, *http.Request, User)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			http.Error(w, "missing authorization header", http.StatusUnauthorized)
 			return
 		}
-
-		// Static check (We will move this to Postgres later)
-		if token != "my-secret-key" {
-			fmt.Println("Auth failed: Invalid token")
-			http.Error(w, "Unauthorized", http.StatusForbidden)
+		parts := strings.Fields(auth)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+			http.Error(w, "invalid authorization header", http.StatusUnauthorized)
 			return
 		}
-
-		// --- STEP 2: DYNAMIC ROUTING ---
-		var targetURL *url.URL
-		found := false
-
-		for prefix, serviceAddr := range services {
-			if strings.HasPrefix(r.URL.Path, prefix) {
-				var err error
-				targetURL, err = url.Parse(serviceAddr)
-				if err != nil {
-					log.Printf("Target URL parse error: %v", err)
-					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-					return
-				}
-
-				// Optional: Strip the prefix
-				// Example: /pokemon/pikachu -> /pikachu
-				r.URL.Path = strings.TrimPrefix(r.URL.Path, prefix)
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			fmt.Printf("Route not found for: %s\n", r.URL.Path)
-			http.Error(w, "Service Not Found", http.StatusNotFound)
+		token := parts[1]
+		user, ok := tokens[token]
+		if !ok {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
+		// Add minimal debugging header (optional)
+		w.Header().Set("X-Authenticated-User", user.ID)
+		next(w, r, user)
+	}
+}
 
-		// --- STEP 3: REVERSE PROXY ---
-		// This replaces your manual http.Post logic.
-		// It copies all headers, body, and method (GET/POST/PUT) automatically.
-		proxy := httputil.NewSingleHostReverseProxy(targetURL)
+// proxyTo forwards the incoming request to targetBase (e.g., http://pehchan:8081)
+// The forwarded path is targetBase + targetPath (targetPath must begin with / or be "")
+func proxyTo(w http.ResponseWriter, r *http.Request, targetBase string, targetPath string) {
+	targetURL := strings.TrimRight(targetBase, "/") + targetPath
+	// Build new request
+	var body io.Reader
+	if r.Body != nil {
+		buf, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		body = bytes.NewReader(buf)
+		// reset r.Body in case downstream needs it (not strictly necessary here)
+		r.Body = io.NopCloser(bytes.NewReader(buf))
+	}
+	req, err := http.NewRequest(r.Method, targetURL, body)
+	if err != nil {
+		http.Error(w, "failed to build request", http.StatusInternalServerError)
+		return
+	}
+	// copy headers
+	for k, v := range r.Header {
+		for _, vv := range v {
+			req.Header.Add(k, vv)
+		}
+	}
+	// optional: set a short timeout
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		msg := fmt.Sprintf("failed to call backend %s: %v", targetURL, err)
+		http.Error(w, msg, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
 
-		fmt.Printf("Forwarding request to: %s%s\n", targetURL.Host, r.URL.Path)
-		proxy.ServeHTTP(w, r)
-	})
-
-	fmt.Println("Gateway service1 starting on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// copy status code and headers
+	for k, v := range resp.Header {
+		for _, vv := range v {
+			w.Header().Add(k, vv)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
