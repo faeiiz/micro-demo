@@ -1,82 +1,77 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt" // Added fmt for logging
-	"io"
+	"fmt"
 	"log"
 	"net/http"
-	"os"
+	"net/http/httputil"
+	"net/url"
+	"strings"
 )
 
-type Request struct {
-	Message string `json:"message"`
-}
-
-type Response struct {
-	From     string `json:"from"`
-	Received string `json:"received"`
-}
-
 func main() {
-
-	// rdb := redis.NewClient(&redis.Options{
-	// 	Addr:     "redis:6379",
-	// 	Password: "", // no password by default
-	// 	DB:       0,
-	// })
-	// 1. Initialize Environment Variables
-	service2URL := os.Getenv("SERVICE2_URL")
-	if service2URL == "" {
-		service2URL = "http://service2:8081/process"
+	// 1. Define the routing table (Internal K8s DNS names)
+	services := map[string]string{
+		"/pehchan": "http://pehchan-service:8080",
+		"/pokemon": "http://pokemon-service:8080",
+		"/dbz":     "http://dbz-service:8080",
 	}
-	fmt.Printf("1. service2URL initialized: %s\n", service2URL)
 
-	http.HandleFunc("/proxy", func(w http.ResponseWriter, r *http.Request) {
-		// 2. Request Received
-		fmt.Println("2. Received request on /proxy")
+	// 2. Define the main handler (The entry point)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 
-		if r.Method != http.MethodPost {
-			fmt.Println("2.1. Error: Method not allowed")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var req map[string]interface{}
-		// 3. Decoding Request Body
-
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			fmt.Printf("3. Error decoding JSON: %v\n", err)
-			http.Error(w, "invalid json", http.StatusBadRequest)
+		// --- STEP 1: AUTHENTICATION ---
+		token := r.Header.Get("X-Auth-Token") // Or "Authorization"
+		if token == "" {
+			fmt.Println("Auth failed: Missing token")
+			http.Error(w, "Missing Authentication Token", http.StatusUnauthorized)
 			return
 		}
 
-		// 4. Preparing Request for Service 2
-		body, _ := json.Marshal(req)
-		fmt.Printf("4. Marshaled JSON for forwarding: %s\n", string(body))
-
-		// 5. Calling Service 2
-		fmt.Printf("5. Sending POST request to: %s\n", service2URL)
-		resp, err := http.Post(service2URL, "application/json", bytes.NewBuffer(body))
-		if err != nil {
-			fmt.Printf("5.1. Error calling service2: %v\n", err)
-			http.Error(w, "failed to call service2", http.StatusBadGateway)
+		// Static check (We will move this to Postgres later)
+		if token != "my-secret-key" {
+			fmt.Println("Auth failed: Invalid token")
+			http.Error(w, "Unauthorized", http.StatusForbidden)
 			return
 		}
-		defer resp.Body.Close()
-		fmt.Printf("5.2. Received response status from service2: %d\n", resp.StatusCode)
 
-		// 6. Responding to Client
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
-		written, err := io.Copy(w, resp.Body)
-		if err != nil {
-			fmt.Printf("6. Error copying response body: %v\n", err)
+		// --- STEP 2: DYNAMIC ROUTING ---
+		var targetURL *url.URL
+		found := false
+
+		for prefix, serviceAddr := range services {
+			if strings.HasPrefix(r.URL.Path, prefix) {
+				var err error
+				targetURL, err = url.Parse(serviceAddr)
+				if err != nil {
+					log.Printf("Target URL parse error: %v", err)
+					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+					return
+				}
+
+				// Optional: Strip the prefix
+				// Example: /pokemon/pikachu -> /pikachu
+				r.URL.Path = strings.TrimPrefix(r.URL.Path, prefix)
+				found = true
+				break
+			}
 		}
-		fmt.Printf("6.1. Proxying complete. Bytes written: %d\n", written)
+
+		if !found {
+			fmt.Printf("Route not found for: %s\n", r.URL.Path)
+			http.Error(w, "Service Not Found", http.StatusNotFound)
+			return
+		}
+
+		// --- STEP 3: REVERSE PROXY ---
+		// This replaces your manual http.Post logic.
+		// It copies all headers, body, and method (GET/POST/PUT) automatically.
+		proxy := httputil.NewSingleHostReverseProxy(targetURL)
+
+		fmt.Printf("Forwarding request to: %s%s\n", targetURL.Host, r.URL.Path)
+		proxy.ServeHTTP(w, r)
 	})
 
-	// 7. Server Start
-	fmt.Println("7. service1 starting and listening on :8080")
+	fmt.Println("Gateway service1 starting on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

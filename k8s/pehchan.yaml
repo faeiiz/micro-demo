@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pehchan-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pehchan
+  template:
+    metadata:
+      labels:
+        app: pehchan
+    spec:
+      containers:
+      - name: pehchan
+        image: your-docker-username/pehchan-service:latest
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pehchan-service  # <--- This matches the name in your Gateway code!
+spec:
+  selector:
+    app: pehchan
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
