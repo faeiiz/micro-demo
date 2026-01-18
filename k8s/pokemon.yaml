@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pokemon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pokemon
+  template:
+    metadata:
+      labels:
+        app: pokemon
+    spec:
+      containers:
+        - name: pokemon
+          image: pokemon:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8082
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pokemon
+spec:
+  selector:
+    app: pokemon
+  ports:
+    - port: 8082
+      targetPort: 8082

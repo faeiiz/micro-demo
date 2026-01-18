@@ -2,81 +2,130 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt" // Added fmt for logging
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 )
 
-type Request struct {
-	Message string `json:"message"`
+type User struct {
+	ID    string
+	Name  string
+	Email string
 }
 
-type Response struct {
-	From     string `json:"from"`
-	Received string `json:"received"`
+// static token -> user mapping (replace with DB later)
+var tokens = map[string]User{
+	"token-admin-123": {ID: "1", Name: "Admin", Email: "admin@example.com"},
+	"token-mimi-456":  {ID: "2", Name: "Mimi", Email: "mimi@example.com"},
 }
 
 func main() {
+	// Backend service addresses (use k8s DNS or docker-compose names)
+	pehchanURL := envOr("PEHCHAN_URL", "http://pehchan:8081")
+	pokemonURL := envOr("POKEMON_URL", "http://pokemon:8082")
+	dbzURL := envOr("DBZ_URL", "http://dbz:8083")
 
-	// rdb := redis.NewClient(&redis.Options{
-	// 	Addr:     "redis:6379",
-	// 	Password: "", // no password by default
-	// 	DB:       0,
-	// })
-	// 1. Initialize Environment Variables
-	service2URL := os.Getenv("SERVICE2_URL")
-	if service2URL == "" {
-		service2URL = "http://service2:8081/process"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/", authMiddleware(func(w http.ResponseWriter, r *http.Request, user User) {
+		// route based on prefix after /api/
+		path := strings.TrimPrefix(r.URL.Path, "/api/")
+		switch {
+		case strings.HasPrefix(path, "pehchan"):
+			proxyTo(w, r, pehchanURL, strings.TrimPrefix(path, "pehchan"))
+
+		case strings.HasPrefix(path, "pokemon"):
+			proxyTo(w, r, pokemonURL, strings.TrimPrefix(path, "pokemon"))
+
+		case strings.HasPrefix(path, "dbz"):
+			proxyTo(w, r, dbzURL, strings.TrimPrefix(path, "dbz"))
+
+		default:
+			http.Error(w, "unknown api route", http.StatusNotFound)
+		}
+	}))
+
+	addr := envOr("LISTEN_ADDR", ":8080")
+	log.Printf("service1 starting on %s\n", addr)
+	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
-	fmt.Printf("1. service2URL initialized: %s\n", service2URL)
+	return fallback
+}
 
-	http.HandleFunc("/proxy", func(w http.ResponseWriter, r *http.Request) {
-		// 2. Request Received
-		fmt.Println("2. Received request on /proxy")
-
-		if r.Method != http.MethodPost {
-			fmt.Println("2.1. Error: Method not allowed")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+// authMiddleware enforces presence of Authorization header "Bearer <token>".
+// If token valid, calls the handler with the resolved user.
+func authMiddleware(next func(http.ResponseWriter, *http.Request, User)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			http.Error(w, "missing authorization header", http.StatusUnauthorized)
 			return
 		}
-		var req map[string]interface{}
-		// 3. Decoding Request Body
-
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			fmt.Printf("3. Error decoding JSON: %v\n", err)
-			http.Error(w, "invalid json", http.StatusBadRequest)
+		parts := strings.Fields(auth)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+			http.Error(w, "invalid authorization header", http.StatusUnauthorized)
 			return
 		}
-
-		// 4. Preparing Request for Service 2
-		body, _ := json.Marshal(req)
-		fmt.Printf("4. Marshaled JSON for forwarding: %s\n", string(body))
-
-		// 5. Calling Service 2
-		fmt.Printf("5. Sending POST request to: %s\n", service2URL)
-		resp, err := http.Post(service2URL, "application/json", bytes.NewBuffer(body))
-		if err != nil {
-			fmt.Printf("5.1. Error calling service2: %v\n", err)
-			http.Error(w, "failed to call service2", http.StatusBadGateway)
+		token := parts[1]
+		user, ok := tokens[token]
+		if !ok {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
-		defer resp.Body.Close()
-		fmt.Printf("5.2. Received response status from service2: %d\n", resp.StatusCode)
+		// Add minimal debugging header (optional)
+		w.Header().Set("X-Authenticated-User", user.ID)
+		next(w, r, user)
+	}
+}
 
-		// 6. Responding to Client
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(resp.StatusCode)
-		written, err := io.Copy(w, resp.Body)
-		if err != nil {
-			fmt.Printf("6. Error copying response body: %v\n", err)
+// proxyTo forwards the incoming request to targetBase (e.g., http://pehchan:8081)
+// The forwarded path is targetBase + targetPath (targetPath must begin with / or be "")
+func proxyTo(w http.ResponseWriter, r *http.Request, targetBase string, targetPath string) {
+	targetURL := strings.TrimRight(targetBase, "/") + targetPath
+	// Build new request
+	var body io.Reader
+	if r.Body != nil {
+		buf, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		body = bytes.NewReader(buf)
+		// reset r.Body in case downstream needs it (not strictly necessary here)
+		r.Body = io.NopCloser(bytes.NewReader(buf))
+	}
+	req, err := http.NewRequest(r.Method, targetURL, body)
+	if err != nil {
+		http.Error(w, "failed to build request", http.StatusInternalServerError)
+		return
+	}
+	// copy headers
+	for k, v := range r.Header {
+		for _, vv := range v {
+			req.Header.Add(k, vv)
 		}
-		fmt.Printf("6.1. Proxying complete. Bytes written: %d\n", written)
-	})
+	}
+	// optional: set a short timeout
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		msg := fmt.Sprintf("failed to call backend %s: %v", targetURL, err)
+		http.Error(w, msg, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
 
-	// 7. Server Start
-	fmt.Println("7. service1 starting and listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// copy status code and headers
+	for k, v := range resp.Header {
+		for _, vv := range v {
+			w.Header().Add(k, vv)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
