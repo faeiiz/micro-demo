@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type User struct {
@@ -23,6 +26,7 @@ func main() {
 	http.HandleFunc("/users", handleUsers)         // GET /users
 	http.HandleFunc("/users/", handleUserByID)     // GET /users/{id}
 	http.HandleFunc("/users/search", handleSearch) // GET /users/search?name=
+	http.HandleFunc("/auth/login", handleLogin)
 	log.Println("pehchan running on :8081")
 	log.Fatal(http.ListenAndServe(":8081", nil))
 }
@@ -69,4 +73,34 @@ func handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	json.NewEncoder(w).Encode(res)
+}
+
+var jwtSecret = []byte("my-secret-key")
+
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	type req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	var body req
+	json.NewDecoder(r.Body).Decode(&body)
+
+	if body.Email != "mimi@example.com" || body.Password != "123" {
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	claims := jwt.MapClaims{
+		"sub":   "2",
+		"name":  "Mimi",
+		"email": "mimi@example.com",
+		"exp":   time.Now().Add(1 * time.Hour).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	ss, _ := token.SignedString(jwtSecret)
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"access_token": ss,
+	})
 }

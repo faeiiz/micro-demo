@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type User struct {
@@ -32,7 +34,11 @@ func main() {
 	dbzURL := envOr("DBZ_URL", "http://dbz:8083")
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/", authMiddleware(func(w http.ResponseWriter, r *http.Request, user User) {
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		proxyTo(w, r, pehchanURL, "/auth/login")
+	})
+
+	mux.HandleFunc("/api/", jwtMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		// route based on prefix after /api/
 		path := strings.TrimPrefix(r.URL.Path, "/api/")
 		switch {
@@ -130,4 +136,26 @@ func proxyTo(w http.ResponseWriter, r *http.Request, targetBase string, targetPa
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+var jwtSecret = []byte("my-secret-key")
+
+func jwtMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+		tokenStr := strings.TrimPrefix(auth, "Bearer ")
+
+		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+		if err != nil || !token.Valid {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
 }
