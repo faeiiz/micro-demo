@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: service1
+  name: darwaza
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: service1
+      app: darwaza
   template:
     metadata:
       labels:
-        app: service1
+        app: darwaza
     spec:
       containers:
-        - name: service1
-          image: service1:local
+        - name: darwaza
+          image: darwaza:local
           imagePullPolicy: Never
           ports:
             - containerPort: 8080
@@ -29,11 +29,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: service1
+  name: darwaza
 spec:
   type: ClusterIP
   selector:
-    app: service1
+    app: darwaza
   ports:
     - port: 8080
       targetPort: 8080

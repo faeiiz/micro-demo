@@ -24,6 +24,8 @@ var tokens = map[string]User{
 }
 
 func main() {
+	dsn := "host=khazana user=demo password=demo dbname=demo port=5432 sslmode=disable"
+	fmt.Println(dsn)
 	// Backend service addresses (use k8s DNS or docker-compose names)
 	pehchanURL := envOr("PEHCHAN_URL", "http://pehchan:8081")
 	pokemonURL := envOr("POKEMON_URL", "http://pokemon:8082")
